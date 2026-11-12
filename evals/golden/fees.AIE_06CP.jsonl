@@ -1,0 +1,1 @@
+{"id": "fees-AIE06CP", "type": "answerable", "history": [], "question": "¿Cuánto cuesta reponer una tarjeta de crédito si me la robaron?", "expected_intent": "product_question", "expected_sources": ["credit-cards-fees.pdf"], "forbidden_sources": [], "key_facts": ["primera reposición"]}
