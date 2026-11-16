@@ -62,14 +62,14 @@ Antes/después (paso 10, un cambio a la vez) y la config final elegida por el eq
 
 ## Sesión 6 — Tools del MCP en el chat
 
-Dominio: `<dominio>`. MCP: el mock (`http://127.0.0.1:6274/?MCP_INSPECTOR_API_TOKEN=ee7f99b96a088fe4456b2bcf889411aec5189602b51196220cf7676f7eec3a3e`) y, si ya tienes `MCP_URL`, el compartido (`bank-mcp`).
+Dominio: `fees`. MCP: el mock (`http://127.0.0.1:6274/?MCP_INSPECTOR_API_TOKEN=<>`) y, si ya tienes `MCP_URL`, el compartido (`bank-mcp`).
 
 ### Tools de tu dominio
 
 | MCP | Tools que lista `dev/mcp/mcp_tools.py` |
 |---|---|
-| Mock | _(anotar)_ |
-| Compartido | _(anotar)_ |
+| Mock | `get_charged_fees` (consulta), `get_transactions` (consulta), `request_fee_refund` (acción sensible) |
+| Compartido | `get_charged_fees` (consulta), `get_transactions` (consulta), `request_fee_refund` (acción sensible) — idénticas al mock |
 
 ### Conversación en `dev/chat.py` (paso 12)
 Soy CUS-1001, me cobraron dos veces en el supermercado
@@ -87,9 +87,20 @@ El asistente digital no ejecuta la devolución: registra la solicitud y confirma
   Fuentes:
    [1] fee-refund-policy.docx · Política de devolución de comisiones 
 
+En esta conversación el agente no llegó a llamar ninguna tool (no hay línea `→`): respondió solo con RAG, citando el caso de ejemplo de `undue-charges-cases.pdf`. Para completar los 4 tipos de prueba, se corrieron además estas (mismo agente, MCP compartido, dominio `fees`):
+
+| Prueba | Mensaje | Tool pedida (`→`) | Qué pasó | Primer texto / respuesta completa (ms) |
+|---|---|---|---|---|
+| Consulta de tu dominio | "Soy CUS-1001, ¿qué comisiones me han cobrado este mes?" | `get_charged_fees(customer_id=CUS-1001)` | Resultado correcto: listó `FEE-4001` (Retiro en cajero de otro banco, S/ 6.50, no reembolsable) y `FEE-4002` (Mantenimiento de cuenta, S/ 12.00, reembolsable), igual que `bank_data.py`. | 14 095 / 14 247 |
+| Acción confirmada | "Soy CUS-1001, quiero que me devuelvan la comisión de mantenimiento de cuenta, la FEE-4002, porque no mantuve el saldo mínimo y no me avisaron" | `request_fee_refund(fee_id=FEE-4002, reason=...)` | `pending_approval`: la tool no se ejecuta, queda pendiente de un asesor. El agente no afirmó que la devolución ya se hizo. | 50 301 / 50 575 |
+| Sin tool que la resuelva | "¿Cuánto cuesta una transferencia interbancaria inmediata?" | ninguna | Pregunta general del tarifario: no llamó ninguna tool, respondió solo con RAG citando `transfer-fees.csv` (S/ 5.00). | 6 309 / 6 483 |
+| Tool de otro dominio | "Soy CUS-1001, ¿cuál es la línea de crédito disponible de mi tarjeta?" | — (no la tiene: `get_credit_line` es de `cards`) | El agente no tiene esa tool ni el dato en el tarifario: dijo que no tenía acceso, sin inventar un monto. | 8 713 / 8 857 |
+
 ### ¿El modelo inventó algún dato cuando ninguna tool lo resolvía?
 
-no
+no. Tampoco en las pruebas adicionales: en los dos casos sin tool el agente fue explícito sobre no tener el dato, en vez de inventar una cifra.
 
 ### Conclusión
+
+El filtro por dominio (`X-Bank-Domain: fees`) funciona de punta a punta: mock y compartido exponen las mismas 3 tools (`get_charged_fees`, `get_transactions`, `request_fee_refund`), ninguna de otro dominio. Las acciones sensibles (`request_fee_refund`) nunca se ejecutan solas: siempre quedan `pending_approval`, y el agente lo comunica sin prometer que ya se hizo — se ve tanto en el ejemplo del cobro duplicado (pide confirmar antes de iniciar la revisión) como en la prueba de devolución. Cuando no hay tool ni dato en el tarifario, el agente lo admite en vez de inventar.
  
