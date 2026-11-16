@@ -80,4 +80,28 @@ Fuentes recuperadas (en orden): `credit-cards-fees.pdf`, `undue-charges-cases.pd
 
 ## Línea base (S5)
 
-Pendiente: correr `uv run eval` completo y copiar aquí el resumen. Antes conviene revisar los archivos `fees.AIE_17GM.jsonl` y `fees.AIE_40CP.jsonl`: repiten casos del golden set base (el de ChristianPM tiene los 30), y la corrida completa los cuenta dos veces.
+### Resultado final
+
+Ambos archivos ya quedaron corregidos a un caso propio cada uno (`fees.AIE_17GM.jsonl` tenía el mismo problema: era un duplicado exacto de `fees-01`, se reemplazó por un caso nuevo). Corrida contra Foundry real (`gpt-5-nano`) y AI Search real (`idx-team-06`, 29 chunks, `SEARCH_TOP_K=5`), juez local (G-Eval, `gpt-5-mini`). 33 casos: 30 del golden set base + 1 por integrante. Detalle: `data/eval/fees-20261116-172231.json`.
+
+| Métrica | Valor |
+|---|---:|
+| recall@5 | 1.00 |
+| intención | 0.97 |
+| fuentes | 0.97 |
+| hechos | 0.50 |
+| apoyo (groundedness) | 4.9/5 |
+| relevancia | 4.8/5 |
+| cita correcta | 1.00 |
+| fugas de datos personales | 0 |
+| citas de fuentes prohibidas | 0 |
+| tokens | 45 353 entrada / 51 030 salida |
+
+Casos con NO:
+- **Hechos en NO (16 de 33 casos), con recall y fuentes en ok**: no es un problema de recuperación ni de contexto. `gpt-5-nano` casi siempre escribe los montos en palabras ("doscientos cuarenta soles", "cinco milésimas por ciento") en vez del formato exacto del golden set ("S/ 240", "0,005 %"), y el chequeo de hechos busca el texto literal. El apoyo (4.9/5) y la relevancia (4.8/5) confirman que el contenido es correcto. Mejora: pedir en el prompt que los montos se escriban en el formato `S/ X.XX` / `X %` tal como aparecen en el tarifario.
+- **Intención mal clasificada, con fuente citada de más (`fees-27`, reproducible en 2 corridas)**: "¿A cuánto está el dólar hoy?" se espera `out_of_scope` (igual que `fees-28`, que sí sale bien), pero el agente responde `product_question` citando `atm-network.html`. Mejora: reforzar en el prompt que las preguntas de tipo de cambio son `out_of_scope` aunque mencionen "cajero" o "banco".
+- **Fuente prohibida citada, de forma intermitente (`fees-25`, tipo `noise`)**: en una corrida previa con el mismo `.env` y el mismo índice, "¿Cómo reservo estacionamiento en la sede central?" citó `internal-notice-parking.md` (fuente prohibida). En la corrida de la tabla no volvió a pasar: `gpt-5-nano` no es determinístico. Riesgo latente a revisar: por qué `internal-notice-parking.md` está en el índice del dominio fees.
+- **Recall en NO**: ninguno (`recall@5 = 1.00` en todas las corridas); no aplica esta sesión.
+- **FUGA de datos personales**: 0; no aplica.
+
+Antes/después (paso 10, un cambio a la vez) y la config final elegida por el equipo: detalle completo en `RESULTS_AIE_17GM.md`, sección "Antes y después (paso 10)". Se mantiene `INGEST_CHUNK_MAX_CHARS=1500`, `SEARCH_TOP_K=5`, `KNOWLEDGE_BASE=azure_search`; al cerrar las pruebas se reconstruyó el índice con estos valores (confirmado "29 chunks en ... idx-team-06").
