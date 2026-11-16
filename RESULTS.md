@@ -130,7 +130,7 @@ Una sola corrida por pregunta; los tiempos de `gpt-5-mini` varían entre corrida
 
 | Tipo | Pregunta | Fuentes que citó | ¿Fuente correcta? | Primer texto (ms) | Completa (ms) | Tokens ent. / sal. |
 |---|---|---|---|---:|---:|---:|
-| regla | ¿Cuánto cobran por retirar en un cajero de otro banco? | `fees-faq.md`, `atm-network.html` | Sí | 7306 | 7460 | 826 / 353 |
+| regla del corpus | ¿Cuánto cobran por retirar en un cajero de otro banco? | `fees-faq.md`, `atm-network.html` | Sí | 7306 | 7460 | 826 / 353 |
 | seguimiento (1/2) | Me cobraron dos veces una comisión, ¿se puede devolver? | `fees-faq.md`, `fee-refund-policy.docx` ×2 | Sí | 7219 | 7367 | 855 / 682 |
 | seguimiento (2/2) | ¿y en cuánto tiempo me la devuelven? | `fee-refund-policy.docx` › Plazos | Sí: entendió "la" gracias al rewrite (15 días hábiles, abono en 2) | 9413 | 9540 | 1225 / 948 |
 | término exacto | ¿Qué es el ITF? | `itf-tax.md` ×3, `fees-faq.md`, `fees-glossary.md` | Sí | 6091 | 6348 | 765 / 585 |
@@ -167,6 +167,25 @@ Preguntas frecuentes sobre comisiones > ¿Cuánto cobran por retirar en un cajer
 
 La pregunta del cajero queda escrita al inicio del `content` de 3 chunks que no hablan de eso, y contamina los embeddings y la búsqueda por palabras. Con K=5 la búsqueda del cajero devolvió 4 chunks de `fees-faq` (los 4 del FAQ), cuando solo uno responde. Este es el tipo de adaptación del chunker a un dominio que pide el gate T2. Propuesta: llevar la ruta por nivel real de título (descartar los títulos de nivel igual o mayor al nuevo), reconstruir con `uv run ingest build` y volver a medir.
 
-### 7.4 Pendiente
-- Paso 13: publicar en Azure AI Search y comparar local frente a AI Search (necesita `SEARCH_ENDPOINT` y `SEARCH_INDEX` de la ficha del equipo).
-- Decidir el `SEARCH_TOP_K` del equipo.
+### 7.4 Publicación en Azure AI Search (paso 13)
+Publicado con `uv run ingest publish --target azure_search`: **29 chunks** en el índice `idx-team-06` de `https://srch-workshop-jsu3.search.windows.net`, la misma cantidad que la base local (sección 6). Sin keys: autenticación Entra ID (`SEARCH_ENDPOINT` y `SEARCH_INDEX` ya están en el `.env` del equipo).
+
+`SEARCH_TOP_K` del equipo: **5** (se confirma el valor propuesto en 7.2).
+
+### 7.5 Comparación local frente a AI Search (paso 13)
+Agente reiniciado con `KNOWLEDGE_BASE=azure_search` (log: `29 chunks`, igual que local), mismo `gpt-5-mini` y `SEARCH_TOP_K=5`. Las 6 respuestas de 7.1 corridas de nuevo contra AI Search. Una sola corrida por base; no es evidencia estadística.
+
+| Pregunta | Fuentes en local | Fuentes en AI Search | ¿Mejoró con el reranker? | Completa (local / AI Search) |
+|---|---|---|---|---|
+| ¿Cuánto cobran por retirar en un cajero de otro banco? | `fees-faq.md`, `atm-network.html` | `savings-accounts-fees.html`, `atm-network.html` | Sí: trajo la tabla de tarifas por cuenta (S/ 7.50, S/ 5.00, Premium gratis) en vez del resumen del FAQ, respuesta más específica | 7460 ms / 8038 ms |
+| Me cobraron dos veces una comisión, ¿se puede devolver? | `fees-faq.md`, `fee-refund-policy.docx` ×2 | `fees-faq.md`, `fee-refund-policy.docx` ×3 (Cuándo, Cómo, Plazos) | Sí: con AI Search el plazo (15 días hábiles, abono en 2) llegó en el primer turno; en local hizo falta la pregunta de seguimiento | 7367 ms / 6278 ms |
+| ¿y en cuánto tiempo me la devuelven? | `fee-refund-policy.docx` › Plazos | `fee-refund-policy.docx` › Plazos | Igual: misma fuente única en ambas | 9540 ms / 12716 ms |
+| ¿Qué es el ITF? | `itf-tax.md` ×3, `fees-faq.md`, `fees-glossary.md` | `itf-tax.md` ×3, `fees-faq.md` | No: no citó `fees-glossary.md`; la respuesta no lo necesitó, pero es una fuente de menos | 6348 ms / 11672 ms |
+| ¿Cuánto era la comisión por transferencias interbancarias en 2024? | ninguna (dijo que no tiene el dato) | `transfer-fees.csv` (la vigente, no `transfer-fees-2024.csv`) | No, es una regresión: contestó con la tarifa **vigente** como si fuera la de 2024, en vez de decir que no tiene ese histórico | 5824 ms / 6860 ms |
+| ¿A cuánto está el dólar hoy? | ninguna | ninguna | Igual: `out_of_scope` en ambas, sin fuentes | 4626 ms / 5169 ms |
+
+Lectura:
+- En 2 de 6 turnos el reranking semántico de AI Search trajo una fuente más específica o completa que la búsqueda híbrida local (cajero, cobro duplicado).
+- En la pregunta del documento vencido, AI Search citó la tarifa vigente (`transfer-fees.csv`) para una pregunta sobre 2024, y el modelo la presentó como si fuera el dato histórico: es el caso más delicado de los seis, porque es una cifra incorrecta presentada con confianza. Local, en cambio, no encontró fuente y admitió que no tenía el dato. El filtro `still_valid_filter` sigue excluyendo igual `transfer-fees-2024.csv` en ambas bases; la diferencia está en que el ranking de AI Search sí trae `transfer-fees.csv` por similitud de texto, y local no.
+- Las diferencias de latencia (misma pregunta, 5 a 7 s en algunos casos) son ruido de `gpt-5-mini` entre corridas, no del backend de búsqueda: ya se había observado en la sección 1.
+- Detalle completo (incluida la lectura por pregunta) también en `RESULTS_AIE_17GM.md`.
