@@ -166,3 +166,45 @@ Mensaje: "Bloquea mi tarjeta". Respuesta: con ambos runtimes el agente la trató
 ### Conclusión
 
 La skill y la memoria de trabajo cumplen lo esperado: el turno 2 pidió la devolución sin volver a consultar las comisiones y el turno 3 se respondió sin tools con lo que ya había en la memoria. Cambiar de runtime es solo `AGENT_RUNTIME` en el `.env`; el resto del agente (reglas, aprobación, API, tests) no cambia, que es la razón de haber dejado `_run` como única puerta a las tools. Para la sesión 8 el `.env` queda con `AGENT_RUNTIME=agent_framework`, porque en esta corrida fue el que completó la conversación sin depender del reintento del cliente.
+
+
+## Sesión 8 — Aprobación humana, validación y reintentos
+
+Dominio: `fees` (paso 6). Foundry real y el MCP compartido, cada runtime levantado por separado (verificado en el log con `Agent runtime: ...`). Las conversaciones las hice en `dev/chat.py`; cuando el chat preguntó `Asesor: ¿apruebas ...? [s/n]`, actué como asesor y respondí `s` para aprobar o `n` para rechazar.
+
+| Caso | Runtime | Mensaje | Qué pasó | Resultado o ID |
+|---|---|---|---|---|
+| Aprobar | `agent_framework` | "Soy CUS-1001, ¿por qué me cobraron comisiones este mes? ¿Alguna se puede devolver?" y luego "Sí, pide la devolución de esa, el motivo es cobro indebido" | La primera consulta recibió del MCP el error "el servicio del banco no responde" (banco en frío) y el modelo respondió con la política de devoluciones. En el segundo turno consultó `get_charged_fees` y pidió `request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)`: quedó `pending_approval` y el agente dijo al cliente que estaba pendiente. Al responder `s` como asesor se ejecutó una vez. | `RFD-9001`, `"status": "registered"` |
+| Rechazar | `react` | Los mismos dos mensajes | `get_charged_fees` respondió bien; al pedir la devolución quedó `pending_approval` (action_id `call_ddqx...`). Al responder `n` como asesor no se ejecutó nada y el agente explicó que el asesor la rechazó. | `{"status": "rechazada", "detail": "El asesor rechazó la acción: no se ejecutó."}` |
+| Error de negocio (`CUS-9999`) | `react` | "Soy CUS-9999, ¿qué comisiones me cobraron?" | `get_charged_fees(customer_id=CUS-9999)` devolvió error; no se reintentó y el modelo pidió confirmar el código de cliente. Sin 502. | `{"error": "El cliente CUS-9999 no existe"}` |
+| Input inválido | `agent_framework` | "Mi número de cliente es 1001, ¿qué comisiones me cobraron?" | El modelo no llamó a ninguna tool: preguntó si se refería a `CUS-1001` y pidió el formato `CUS-XXXX`, porque lee el patrón en la descripción de la tool. La validación contra el JSON Schema no llegó a actuar en esta corrida; la cubre `test_invalid_arguments_never_reach_the_mcp`. | Sin tool; sin llamada al MCP |
+
+### La trayectoria en el log
+
+`agent_framework`, caso Aprobar (misma sesión, tres líneas) y el caso de input inválido:
+
+```text
+INFO agent.application.chat_service: trayectoria 54cf042f-fd8f-41d6-96f2-acfa2e739dd2: get_charged_fees error → respuesta product_question
+INFO agent.application.chat_service: trayectoria 54cf042f-fd8f-41d6-96f2-acfa2e739dd2: get_charged_fees ok → request_fee_refund pending_approval → respuesta sensitive_action
+INFO agent.application.chat_service: trayectoria 54cf042f-fd8f-41d6-96f2-acfa2e739dd2: decisión del asesor → request_fee_refund ok
+INFO agent.application.chat_service: trayectoria 3dc0d440-468e-43c2-909e-cd9edb65a1f0: sin tools → respuesta data_query
+```
+
+`react`, casos Rechazar y `CUS-9999`:
+
+```text
+INFO agent.application.chat_service: trayectoria 83e65d6b-0c12-49c1-a2a9-92ec20216850: get_charged_fees ok → respuesta data_query
+INFO agent.application.chat_service: trayectoria 83e65d6b-0c12-49c1-a2a9-92ec20216850: request_fee_refund pending_approval → respuesta sensitive_action
+INFO agent.application.chat_service: trayectoria 83e65d6b-0c12-49c1-a2a9-92ec20216850: decisión del asesor → request_fee_refund rejected
+INFO agent.application.chat_service: trayectoria 130fd519-9139-4b09-9890-d231d7b92270: get_charged_fees error → respuesta data_query
+```
+
+Hay una línea por turno y la de la decisión del asesor; no aparecieron avisos de reintento (`falló (intento 1 de 2)`) porque el MCP respondió, aunque una vez con un error de negocio.
+
+### ¿Algo se ejecutó sin que lo aprobaras?
+
+No. En los dos runtimes `request_fee_refund` salió siempre como `pending_approval` ("NO SE EJECUTA") y el resultado real (`RFD-9001`) apareció solo después de mi `s`. Al rechazar con `react` no hubo ninguna llamada de ejecución al MCP y la trayectoria lo registra como `rejected`. En ambos casos el texto del modelo antes de mi decisión dijo que la solicitud quedaba pendiente de aprobación, sin afirmar que ya se había hecho.
+
+### Conclusión
+
+La aprobación vive en `_run` y `resolve`, por eso se comporta igual con `react` y con `agent_framework`: la acción queda pendiente con su `action_id`, el asesor decide una vez y el agente le cuenta al cliente lo que pasó. Un error de negocio (`CUS-9999`) y un input mal formado terminan en una respuesta al cliente, no en un 502, y la trayectoria deja en una línea qué tool se usó y cómo terminó cada una. Pendiente de esta corrida: la caída real del MCP no se pudo provocar (es compartido), así que el reintento y el error final lo respaldan los tests `test_a_query_that_fails_once_is_retried` y `test_a_query_that_keeps_failing_is_an_error_and_the_turn_goes_on`; `uv run pytest` → 137 passed. El `.env` queda con `AGENT_RUNTIME=agent_framework` para la sesión 9.
