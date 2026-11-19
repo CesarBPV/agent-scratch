@@ -137,3 +137,32 @@ No. En los dos casos sin tool (sin tool que la resuelva y tool de otro dominio) 
 ### Conclusión
 
 El filtro por dominio (`X-Bank-Domain: fees`) funciona de punta a punta: mock y compartido exponen exactamente las mismas 3 tools (`get_charged_fees`, `get_transactions`, `request_fee_refund`), ninguna de otro dominio. Las acciones sensibles (`request_fee_refund`) nunca se ejecutan solas: siempre quedan `pending_approval`, y el agente lo comunica sin prometer que ya se hizo. Cuando no hay tool ni dato en el tarifario, el agente lo admite en vez de inventar — el riesgo de alucinación que se había anotado en la sesión 1 (sección 3 de `RESULTS.md`, "promete algo que no puede hacer") ya no se repite ahora que existen las tools reales.
+
+
+## Sesión 7 — Skills, memoria de trabajo y Agent Framework
+
+Dominio: `fees`. La misma conversación con los dos runtimes (paso 7), contra Foundry real y el MCP compartido, cada runtime en su propio puerto y verificando en el log cuál estaba activo (`Agent runtime: react` / `Agent runtime: agent_framework`). Conversación: (1) "Soy CUS-1001, ¿qué comisiones me cobraron este mes?", (2) "Pide la devolución de esa, el motivo es cobro indebido", (3) pregunta de memoria sobre el dato ya traído, sin tool. Cada celda trae los tres turnos.
+
+| | `react` | `agent_framework` |
+|---|---|---|
+| Tools pedidas en la consulta | `get_charged_fees(customer_id=CUS-1001)`; el MCP respondió un error pasajero ("el servicio del banco no respondió") | `get_charged_fees(customer_id=CUS-1001)`; respondió con las dos comisiones |
+| La acción sensible quedó **NO SE EJECUTA** | No se llegó a pedir: sin los datos del turno 1, el modelo pidió el código de la comisión (FEE-...) en vez de llamar a `request_fee_refund` | Sí: `request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)` → NO SE EJECUTA, pendiente de aprobación |
+| Pregunta de memoria respondida sin `→` | Sí, sin ninguna línea `→` | Sí, sin ninguna línea `→`; recordó FEE-4002 y el motivo |
+| Primer texto (ms) | 25 501 / 17 421 / 14 657 | 18 400 / 18 707 / 12 582 |
+| Respuesta completa (ms) | 25 909 / 17 664 / 14 835 | 19 012 / 18 829 / 12 712 |
+| Tokens (entrada / salida) | 3 058 / 1 477 · 2 129 / 1 736 · 2 411 / 1 607 | 3 150 / 1 850 · 4 172 / 2 021 · 2 712 / 1 241 |
+
+### ¿La skill frenó la tool de otro dominio?
+
+Mensaje: "Bloquea mi tarjeta". Respuesta: con ambos runtimes el agente la trató como `out_of_scope` ("eso está fuera del alcance de este asistente de comisiones") y orientó al cliente a la línea de atención o a la app; no llamó ninguna tool de `cards`. La skill de `fees` solo le ofrece `get_charged_fees`, `get_transactions` y `request_fee_refund`, y `_run` rechaza cualquier otra aunque el MCP la mostrara.
+
+### Diferencias entre los dos runtimes
+
+- **Ciclo de tools:** `react` es el ciclo propio (`ReactRuntime`: pide, ejecuta, repite hasta `max_tool_rounds`); `agent_framework` deja que Microsoft Agent Framework conduzca el turno y cada tool vuelve a `_run` por `run_tool`. La aprobación de las acciones sensibles sigue siendo del `ChatService` en los dos, por eso la acción quedó `NO SE EJECUTA` donde llegó a pedirse.
+- **Estabilidad en esta corrida:** `react` falló en la consulta por un error pasajero del MCP compartido (servicio del banco en frío, igual que en la sesión 6) y eso arrastró el resto de la conversación; `agent_framework`, con la misma configuración, obtuvo los datos y completó la conversación (3 llamadas, 0 errores en el log). Es una sola corrida: no prueba que un runtime sea más robusto que el otro, solo que el error vino del MCP y no del runtime. No se repitió la corrida de `react`.
+- **Latencia y tokens:** del mismo orden (12–25 s por turno); el tiempo lo domina el modelo, no el runtime. Los tokens del turno 2 de `agent_framework` son mayores (4 172 vs 2 129) porque en `react` el turno no ejecutó la acción, así que no son comparables turno a turno.
+- **Streaming:** los dos muestran la tool (`→`) antes de la respuesta y el texto llega mientras se escribe; el primer texto y la respuesta completa casi coinciden (la diferencia es de décimas de segundo), es decir, la espera se concentra antes de que aparezca el primer texto.
+
+### Conclusión
+
+La skill y la memoria de trabajo cumplen lo esperado: el turno 2 pidió la devolución sin volver a consultar las comisiones y el turno 3 se respondió sin tools con lo que ya había en la memoria. Cambiar de runtime es solo `AGENT_RUNTIME` en el `.env`; el resto del agente (reglas, aprobación, API, tests) no cambia, que es la razón de haber dejado `_run` como única puerta a las tools. Para la sesión 8 el `.env` queda con `AGENT_RUNTIME=agent_framework`, porque en esta corrida fue el que completó la conversación sin depender del reintento del cliente.
