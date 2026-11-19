@@ -126,4 +126,4 @@ sin diferencias
 
 ### Conclusión
 
-el agente ejecuta correctamente al dominio que pertenece. 
+el agente ejecuta correctamente al dominio que pertenece. no evalua otro dominio.
