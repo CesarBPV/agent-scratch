@@ -130,3 +130,48 @@ No. En los dos casos sin tool (sin tool que la resuelva y tool de otro dominio) 
 ### Conclusión
 
 El filtro por dominio (`X-Bank-Domain: fees`) funciona de punta a punta: mock y compartido exponen exactamente las mismas 3 tools (`get_charged_fees`, `get_transactions`, `request_fee_refund`), ninguna de otro dominio. Las acciones sensibles (`request_fee_refund`) nunca se ejecutan solas: siempre quedan `pending_approval`, y el agente lo comunica sin prometer que ya se hizo. Cuando no hay tool ni dato en el tarifario, el agente lo admite en vez de inventar — el riesgo de alucinación que se había anotado en la sesión 1 (sección 3 de `RESULTS.md`, "promete algo que no puede hacer") ya no se repite ahora que existen las tools reales.
+
+---
+
+## Sesión 8 — Aprobación humana, validación y reintentos
+
+Dominio: `fees` (paso 6). Foundry real, Azure AI Search real (`idx-team-06`) y el MCP compartido; cada runtime levantado por separado en su propia terminal (`uv run uvicorn agent.infrastructure.bootstrap:create_app --factory`, deteniendo con Ctrl+C y relevantando entre uno y otro porque `--reload` no relee el `.env`), confirmado en el log con la línea `Agent runtime: ...`. Las conversaciones fueron contra `dev/chat.py` — mismo flujo de pregunta/aprobación que describe el paso 6 (la consola pregunta `Asesor: ¿apruebas ...? [s/n]` y yo respondo como asesor).
+
+| Caso | Runtime | Mensaje | Qué pasó | Resultado o ID |
+|---|---|---|---|---|
+| Aprobar | `agent_framework` | "Soy CUS-1001, ¿por qué me cobraron comisiones este mes? ¿Alguna se puede devolver?" y luego "Sí, pide la devolución de esa, el motivo es cobro indebido" | `get_charged_fees` trajo `FEE-4001` y `FEE-4002`; el agente ofreció devolver `FEE-4002` (reembolsable) antes de que yo lo pidiera. Al confirmar, pidió `request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)`: quedó `pending_approval` (`action_id: call-2935878a`) y el agente avisó que no se había ejecutado. Al responder `s` como asesor, se registró. | `RFD-9001`, `"status": "registered"` |
+| Rechazar | `react` | Los mismos dos mensajes, sesión nueva | `get_charged_fees` respondió bien (mismas dos comisiones); al pedir la devolución quedó `pending_approval` (`action_id: call_TOpfA980xhqwmG0ihEN8oira`), sin ejecutarse. Al responder `n` como asesor, no se ejecutó nada y el agente le dijo al cliente que el asesor la rechazó. | `{"status": "rechazada", "detail": "El asesor rechazó la acción: no se ejecutó."}` |
+| Error de negocio (`CUS-9999`) | `react` | "Soy CUS-9999, ¿qué comisiones me cobraron?" | `get_charged_fees(customer_id=CUS-9999)` devolvió un error de negocio; no se reintentó (no es un error de conexión) y el modelo le pidió al cliente que confirmara su código `CUS-…`. Sin 502, sin inventar datos. | `{"error": "El cliente CUS-9999 no existe"}` |
+| Input inválido | `react` | "Mi número de cliente es 1001, ¿qué comisiones me cobraron?" | El modelo no llamó ninguna tool: pidió el código en formato `CUS-XXXX` porque lee el patrón `^CUS-\d{4}$` en la descripción de `get_charged_fees`. Ninguna llamada llegó al MCP, así que la validación de `_invalid_arguments` (red de seguridad de `test_invalid_arguments_never_reach_the_mcp`) no tuvo que actuar en esta corrida. | Sin tool; sin llamada al MCP |
+
+Antes de llegar a esta tabla limpia hubo dos corridas con ruido real, no simulado: en la primera `get_charged_fees` devolvió "El servicio del banco no responde; intenta de nuevo en unos minutos" (el banco detrás del MCP compartido estaba en frío, el caso que describe el paso 6), el modelo lo reintentó por su cuenta y, al reintentar, el turno terminó en un `APITimeoutError` del propio Foundry (`gpt-5-nano` tardó más de lo que esperaba el cliente de Agent Framework) — un fallo de infraestructura real, no del agente. En la segunda corrida volvió a salir el mismo "banco en frío" en `get_charged_fees`, y como la sesión no tenía todavía el `FEE-…`, el segundo mensaje ("pide la devolución de esa") no pudo completarse y el agente pidió el código de la comisión. Siguiendo lo que indica el paso 6 ("repite el mensaje"), reintenté la conversación completa y la tercera corrida fue la limpia de la tabla.
+
+### La trayectoria en el log
+
+`agent_framework`, caso Aprobar (sesión `06981964-f593-4c70-8a39-e6a6cb395179`):
+
+```text
+INFO agent.application.chat_service: trayectoria 06981964-f593-4c70-8a39-e6a6cb395179: get_charged_fees ok → respuesta product_question
+INFO agent.application.chat_service: trayectoria 06981964-f593-4c70-8a39-e6a6cb395179: request_fee_refund pending_approval → respuesta sensitive_action
+INFO agent.application.chat_service: trayectoria 06981964-f593-4c70-8a39-e6a6cb395179: decisión del asesor → request_fee_refund ok
+```
+
+`react`, casos Rechazar (sesión `1fbbe1c6-...`), `CUS-9999` (sesión `1ff0d9fa-...`) e input inválido (sesión `7cb04f30-...`):
+
+```text
+INFO agent.application.chat_service: trayectoria 1fbbe1c6-3a78-4621-97ae-0a7d04484ebe: get_charged_fees ok → respuesta product_question
+INFO agent.application.chat_service: trayectoria 1fbbe1c6-3a78-4621-97ae-0a7d04484ebe: request_fee_refund pending_approval → respuesta sensitive_action
+INFO agent.application.chat_service: trayectoria 1fbbe1c6-3a78-4621-97ae-0a7d04484ebe: decisión del asesor → request_fee_refund rejected
+INFO agent.application.chat_service: trayectoria 1ff0d9fa-e6bb-4a65-9d06-9f43748d05e6: get_charged_fees error → respuesta data_query
+INFO agent.application.chat_service: trayectoria 7cb04f30-7e86-4390-9a36-fe9035fd43df: sin tools → respuesta product_question
+```
+
+No aparecieron líneas `tool ... falló (intento 1 de 2)` en estas cuatro corridas limpias: el MCP compartido respondió siempre (a veces con un error de negocio, nunca con una caída de conexión), así que el reintento de `TOOL_RETRIES` no llegó a activarse. Sí se vio una vez, indirectamente, en las corridas con ruido: el "banco en frío" es justamente el camino que toma `_call` cuando el MCP responde pero el backend no, y ahí no hay reintento porque es un error de negocio, no de conexión.
+
+### ¿Algo se ejecutó sin que lo aprobaras?
+
+No. En los dos runtimes, `request_fee_refund` quedó siempre en `pending_approval` ("NO SE EJECUTA") con su propio `action_id`, y el resultado real (`RFD-9001` al aprobar, la respuesta `rechazada` al rechazar) apareció solo después de mi decisión como asesor. El texto del agente antes de esa decisión nunca afirmó que la devolución ya se había hecho, en ningún caso.
+
+### Conclusión
+
+La aprobación humana vive en `_run` y `resolve` (`chat_service.py`), por eso se comporta igual con `react` y con `agent_framework`: la tool sensible nunca se llama directamente, el asesor decide una vez por `action_id` y el agente le explica al cliente el resultado sin prometer de más. Un error de negocio (`CUS-9999`, o el "banco en frío" de las corridas con ruido) y un input mal formado (`1001` sin el prefijo `CUS-`) terminan en una respuesta al cliente, nunca en un 502 ni en un dato inventado — y la validación de argumentos contra el JSON Schema queda como red de seguridad para cuando el modelo igual se equivoque, aunque esta sesión el modelo ya filtró el input inválido antes de pedir la tool. La caída real del MCP compartido no se pudo provocar a propósito (es un recurso compartido), pero el reintento y el error final quedan cubiertos por `test_a_query_that_fails_once_is_retried` y `test_a_query_that_keeps_failing_is_an_error_and_the_turn_goes_on`; `uv run pytest` → 137 passed. El `.env` queda con `AGENT_RUNTIME=agent_framework` para la sesión 9.

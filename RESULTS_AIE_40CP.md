@@ -104,3 +104,26 @@ no. Tampoco en las pruebas adicionales: en los dos casos sin tool el agente fue 
 
 El filtro por dominio (`X-Bank-Domain: fees`) funciona de punta a punta: mock y compartido exponen las mismas 3 tools (`get_charged_fees`, `get_transactions`, `request_fee_refund`), ninguna de otro dominio. Las acciones sensibles (`request_fee_refund`) nunca se ejecutan solas: siempre quedan `pending_approval`, y el agente lo comunica sin prometer que ya se hizo — se ve tanto en el ejemplo del cobro duplicado (pide confirmar antes de iniciar la revisión) como en la prueba de devolución. Cuando no hay tool ni dato en el tarifario, el agente lo admite en vez de inventar.
  
+ ## Sesión 7 — Skills, memoria de trabajo y Agent Framework
+
+Dominio: fees. La misma conversación con los dos runtimes (paso 7).
+
+| | `react` | `agent_framework` |
+|---|---|---|
+SOY fees-01, ¿Cuánto cobran por retirar en un cajero de otro banco con la Cuenta Simple?
+  Agente [product_question]: En la Cuenta Simple, retirar en cajero de otro banco (Perú) tiene un costo de S/ 7.50.
+  Fuentes:
+   [1] savings-accounts-fees.html · Tarifario de cuentas de ahorro > Comisiones por cuenta
+  (primer texto en 12219 ms, respuesta completa en 12266 ms, 2468 tokens de entrada, 1769 de salida)
+
+### ¿La skill frenó la tool de otro dominio?
+
+Mensaje: si Respuesta: Agente [product_question]: El formato de código de cliente es CUS-XXXX con cuatro dígitos. El que enviaste (CUS-001) no es válido. Por favor, indica tu código correcto (por ejemplo CUS-0001). Una vez tenga el código válido, te digo qué comisiones se cobraron y si hay una devolución solicitada (y cuál sería el FEE- correspondiente si aplica).
+
+### Diferencias entre los dos runtimes
+
+sin diferencias
+
+### Conclusión
+
+el agente ejecuta correctamente al dominio que pertenece. no evalua otro dominio.
