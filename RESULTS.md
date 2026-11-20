@@ -189,3 +189,36 @@ Lectura:
 - En la pregunta del documento vencido, AI Search citó la tarifa vigente (`transfer-fees.csv`) para una pregunta sobre 2024, y el modelo la presentó como si fuera el dato histórico: es el caso más delicado de los seis, porque es una cifra incorrecta presentada con confianza. Local, en cambio, no encontró fuente y admitió que no tenía el dato. El filtro `still_valid_filter` sigue excluyendo igual `transfer-fees-2024.csv` en ambas bases; la diferencia está en que el ranking de AI Search sí trae `transfer-fees.csv` por similitud de texto, y local no.
 - Las diferencias de latencia (misma pregunta, 5 a 7 s en algunos casos) son ruido de `gpt-5-mini` entre corridas, no del backend de búsqueda: ya se había observado en la sección 1.
 - Detalle completo (incluida la lectura por pregunta) también en `RESULTS_AIE_17GM.md`.
+
+## 8. Sesión 5 · Juez local (G-Eval) frente a decision-1
+
+Dos corridas completas del golden set (33 casos, mismo agente y mismo `.env`: Foundry real `gpt-5-nano`, AI Search real `idx-team-06`, `SEARCH_TOP_K=5`), cambiando solo `--judge`. Detalle: `data/eval/fees-20261116-172231.json` (local) y `data/eval/fees-20261117-162258.json` (decision-1).
+
+| Juez | recall@5 | intención | fuentes | hechos | apoyo | relevancia | cita correcta | fugas | fuentes prohibidas | tokens del agente (ent. / sal.) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| local (G-Eval, `gpt-5-mini`) | 1.00 | 0.97 | 0.97 | 0.50 | 4.9/5 | 4.8/5 | 1.00 | 0 | 0 | 45 353 / 51 030 |
+| azure_evaluation (decision-1) | 1.00 | 0.97 | 0.94 | 0.33 | 4.8/5 | 4.8/5 | 1.00 | 0 | 1 | 45 383 / 49 928 |
+
+`recall`, `fuentes`, `hechos`, `fugas` y `citas prohibidas` dependen del agente (RAG), no del juez: las diferencias entre filas (p. ej. 0.97 vs 0.94 en fuentes, 1 cita prohibida solo en la corrida de decision-1) son el mismo ruido entre corridas de `gpt-5-nano` que ya se documentó en esta sesión, no un efecto de cambiar de juez. Los tokens del agente también coinciden entre las dos filas, como se espera.
+
+### Tokens y tiempo del juez (no del agente)
+
+El resumen de `uv run eval` no incluye los tokens ni el tiempo del juez, solo los del agente, así que se midieron aparte:
+
+- **G-Eval (local)**: cada llamada pasa por `gpt-5-mini` y queda en el log (`llm GEvalScores`). En los 30 casos juzgados de la corrida de línea base: promedio **949 tokens de entrada y 523 de salida** por caso (28 473 / 15 693 en total), **4 742 ms** de latencia promedio (entre 2 780 y 8 228 ms).
+- **decision-1**: la API (`/providers/microsoft/v1/systemone`) no devuelve tokens en su respuesta — no se puede medir ese costo con los datos que expone el contrato actual. Tampoco queda logueado el tiempo por llamada (no hay instrumentación como la de G-Eval), así que se midió aparte: llamando a los dos jueces directamente con los mismos fragmentos y la misma respuesta real del agente, para 3 preguntas.
+
+| Pregunta | local (ms) | decision-1 (ms) |
+|---|---:|---:|
+| ¿Cuánto cobran por retirar en un cajero de otro banco? | 15 661 | 11 784 |
+| ¿Cuánto cuesta una transferencia interbancaria inmediata? | 4 337 | 965 |
+| ¿Cuándo se devuelve una comisión? | 6 571 | 1 334 |
+
+En 2 de 3 preguntas decision-1 fue varias veces más rápido, consistente con ser "un modelo de decisión... no escribe: devuelve números" en vez de redactar un razonamiento como G-Eval. La pregunta del cajero fue lenta en ambos (no se investigó por qué). Con solo 3 muestras no es una medición fuerte, pero la diferencia de velocidad es clara y consistente con el diseño de cada juez.
+
+### Otras diferencias observadas
+- **Escala de las notas**: G-Eval devuelve enteros de 1 a 5 (y explica su razonamiento en texto); decision-1 devuelve números continuos (p. ej. groundedness 4.76, relevancia 2.10), un promedio ponderado por probabilidad entre los 5 niveles de su rúbrica, sin texto de explicación.
+- **Desacuerdo entre jueces**: en la pregunta del cajero, G-Eval calificó relevancia 3.0 y decision-1 2.10 para el mismo fragmento y la misma respuesta — el criterio continuo de decision-1 penalizó más. Con una sola comparación no alcanza para decidir cuál es más confiable.
+
+### Conclusión
+Con la configuración actual (`JUDGE=local`) el equipo paga tokens de `gpt-5-mini` y más latencia por caso, a cambio de un razonamiento legible (`reasoning` de G-Eval, útil para depurar por qué un caso salió mal). `decision-1` es más rápido y no expone costo de tokens, pero no explica su nota. Para correr el golden set seguido y muchas veces convendría decision-1 por velocidad; para depurar un caso puntual que salió mal, G-Eval da más contexto.
