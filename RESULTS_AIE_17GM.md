@@ -133,6 +133,35 @@ El filtro por dominio (`X-Bank-Domain: fees`) funciona de punta a punta: mock y 
 
 ---
 
+## Sesión 7 — Skills, memoria de trabajo y Agent Framework
+
+Dominio: `fees`. La misma conversación con los dos runtimes (paso 7): consulta de comisiones de CUS-1001, la acción confirmada (devolución de FEE-4002 por cobro indebido), una pregunta sin tool (`transfer-fees.csv`, RAG puro) y, al final, la pregunta de memoria. Foundry real (`gpt-5-nano`), Azure AI Search real (`idx-team-06`) y el MCP compartido; cada runtime en su propia terminal, confirmado con `Agent runtime: ...` en el log.
+
+| | `react` | `agent_framework` |
+|---|---|---|
+| Tools pedidas en la consulta | `get_charged_fees(customer_id=CUS-1001)` | `get_transactions(customer_id=CUS-1001, limit=10)` y `get_charged_fees(customer_id=CUS-1001)` — pidió una tool de más (transacciones) que no hacía falta para responder, pero no inventó nada con ella |
+| La acción sensible quedó **NO SE EJECUTA** | Sí: `request_fee_refund` → `pending_approval`, `action_id: call_tshlull5qVfYu5VJPffyVUBf`, sin aprobar ni rechazar (se dejó pendiente a propósito, para esta prueba) | Sí: `request_fee_refund` → `pending_approval`, `action_id: call-2cc6e4a4`, igual sin resolver |
+| Pregunta de memoria respondida sin `→` | Sí: "Código de cliente: CUS-1001. Comisión solicitada... FEE-4002..." sin ninguna línea `→` | Sí: "Código de cliente: CUS-1001. Comisión solicitada para devolución: FEE-4002..." sin ninguna línea `→` |
+| Primer texto (ms) | 47 239 (consulta) | 21 650 (consulta) |
+| Respuesta completa (ms) | 47 540 | 21 933 |
+| Tokens (entrada / salida) | 3 196 / 2 727 | 3 497 / 3 743 |
+
+La primera corrida con `react` no fue la de la tabla: `get_charged_fees` devolvió "El servicio del banco no responde; intenta de nuevo en unos minutos" (el mismo "banco en frío" que documenté en la sesión 8), así que no hubo `FEE-…` para la acción confirmada ni para la pregunta de memoria. Repetí la conversación completa y esa segunda corrida es la de la tabla.
+
+### ¿La skill frenó la tool de otro dominio?
+
+Mensaje: "Bloquea mi tarjeta CRD-2001". Respuesta, con los dos runtimes: el agente clasificó la intención como `out_of_scope` y explicó que ese canal es solo para comisiones y tarifas, sugiriendo la app o el centro de atención de tarjetas — sin pedir ninguna tool. La skill de `fees` solo expone `get_charged_fees`, `get_transactions` y `request_fee_refund`; `block_card` ni siquiera aparece entre las tools que recibe el modelo, así que no hay nada que "frenar" en tiempo de ejecución: ni el MCP ni la skill se la muestran.
+
+### Diferencias entre los dos runtimes
+
+Con el mismo `.env` salvo la línea `AGENT_RUNTIME`, las tools, la respuesta en pedazos (streaming) y el bloqueo de la acción sensible se comportaron igual en ambos. Las diferencias que sí aparecieron fueron del modelo, no del runtime: con `agent_framework` pidió una tool de más en la primera consulta (`get_transactions`, que no necesitaba) y, en una corrida descartada de la prueba "sin tool", el turno terminó en un error real — `ValidationError: ... answer ... no puede estar vacío` (el modelo devolvió una respuesta vacía y el contrato tipado de `AgentReply` la rechazó antes de llegar al cliente). Con `react` esa misma pregunta se resolvió bien sin ninguna tool, solo con RAG. En ambos casos el turno fallido no quedó en el historial: la pregunta de memoria, justo después, igual recordó `CUS-1001` y `FEE-4002` sin confusión. Los tiempos del primer texto (21–70 s según el turno, con llamadas a tools de por medio) confirman lo que anota la guía: con un modelo que razona, 10 a 30 s es el piso, no el techo, y una acción sensible con tool + validación tarda más que una consulta simple.
+
+### Conclusión
+
+Cambiar de runtime fue una sola línea del `.env`: el harness vive en `chat_service.py` y es el mismo para los dos. `agent_framework` y el ciclo `react` propio exponen las mismas tools, bloquean igual la acción sensible y responden igual a la pregunta de memoria sin tool. La única fragilidad fue del modelo (`gpt-5-nano`) y de la red compartida: una tool de más, un "banco en frío" transitorio y, una vez, una respuesta vacía que el contrato tipado atajó antes de que llegara al cliente — nada de eso tocó la skill ni el límite por dominio. Dejo `AGENT_RUNTIME=agent_framework` en el `.env`, como pide el cierre de esta sesión, para que la sesión 8 arme la aprobación humana sobre este runtime.
+
+---
+
 ## Sesión 8 — Aprobación humana, validación y reintentos
 
 Dominio: `fees` (paso 6). Foundry real, Azure AI Search real (`idx-team-06`) y el MCP compartido; cada runtime levantado por separado en su propia terminal (`uv run uvicorn agent.infrastructure.bootstrap:create_app --factory`, deteniendo con Ctrl+C y relevantando entre uno y otro porque `--reload` no relee el `.env`), confirmado en el log con la línea `Agent runtime: ...`. Las conversaciones fueron contra `dev/chat.py` — mismo flujo de pregunta/aprobación que describe el paso 6 (la consola pregunta `Asesor: ¿apruebas ...? [s/n]` y yo respondo como asesor).
