@@ -106,24 +106,28 @@ El filtro por dominio (`X-Bank-Domain: fees`) funciona de punta a punta: mock y 
  
  ## Sesión 7 — Skills, memoria de trabajo y Agent Framework
 
-Dominio: fees. La misma conversación con los dos runtimes (paso 7).
+Dominio: `fees`. La misma conversación con los dos runtimes (paso 7).
 
 | | `react` | `agent_framework` |
 |---|---|---|
-SOY fees-01, ¿Cuánto cobran por retirar en un cajero de otro banco con la Cuenta Simple?
-  Agente [product_question]: En la Cuenta Simple, retirar en cajero de otro banco (Perú) tiene un costo de S/ 7.50.
-  Fuentes:
-   [1] savings-accounts-fees.html · Tarifario de cuentas de ahorro > Comisiones por cuenta
-  (primer texto en 12219 ms, respuesta completa en 12266 ms, 2468 tokens de entrada, 1769 de salida)
+| Tools pedidas en la consulta | `get_charged_fees(customer_id=CUS-1001)`; el MCP respondió un error pasajero ("el servicio del banco no respondió") | `get_charged_fees(customer_id=CUS-1001)`; respondió con las dos comisiones |
+| La acción sensible quedó **NO SE EJECUTA** | No se llegó a pedir: sin los datos del turno 1, el modelo pidió el código de la comisión (FEE-...) en vez de llamar a `request_fee_refund` | Sí: `request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)` → NO SE EJECUTA, pendiente de aprobación |
+| Pregunta de memoria respondida sin `→` | Sí, sin ninguna línea `→` | Sí, sin ninguna línea `→`; recordó FEE-4002 y el motivo |
+| Primer texto (ms) | 25 501 / 17 421 / 14 657 | 18 400 / 18 707 / 12 582 |
+| Respuesta completa (ms) | 25 909 / 17 664 / 14 835 | 19 012 / 18 829 / 12 712 |
+| Tokens (entrada / salida) | 3 058 / 1 477 · 2 129 / 1 736 · 2 411 / 1 607 | 3 150 / 1 850 · 4 172 / 2 021 · 2 712 / 1 241 |
 
 ### ¿La skill frenó la tool de otro dominio?
 
-Mensaje: si Respuesta: Agente [product_question]: El formato de código de cliente es CUS-XXXX con cuatro dígitos. El que enviaste (CUS-001) no es válido. Por favor, indica tu código correcto (por ejemplo CUS-0001). Una vez tenga el código válido, te digo qué comisiones se cobraron y si hay una devolución solicitada (y cuál sería el FEE- correspondiente si aplica).
+Mensaje: "Bloquea mi tarjeta". Respuesta: con ambos runtimes el agente respondió que estaba fuera del alcance de un asistente de comisiones (`out_of_scope`) y orientó al cliente a la línea de atención o a la app; no llamó ninguna tool de `cards`. La skill de `fees` solo ofrece `get_charged_fees`, `get_transactions` y `request_fee_refund`, y `_run` rechaza otra tool aunque el MCP la muestre.
 
 ### Diferencias entre los dos runtimes
 
-sin diferencias
+- **Ciclo de tools:** `react` usa su ciclo propio (`ReactRuntime`) y repite hasta `max_tool_rounds`; `agent_framework` deja que Microsoft Agent Framework conduzca el turno y cada tool vuelve a `_run` por `run_tool`. La aprobación sensible sigue en `ChatService` en ambos runtimes.
+- **Estabilidad en esta corrida:** `react` falló en la primera consulta por un error pasajero del MCP compartido y no completó el flujo de devolución; `agent_framework` obtuvo las dos comisiones y completó los tres turnos sin errores. Es una sola corrida, no demuestra que un runtime sea más robusto.
+- **Latencia y tokens:** ambos estuvieron en el mismo orden de magnitud (12–25 s por turno); el tiempo lo domina el modelo. Los tokens del turno 2 no son directamente comparables porque `react` no llegó a pedir la devolución.
+- **Streaming:** ambos mostraron la tool (`→`) antes de la respuesta y escribieron el texto mientras se generaba. El primer texto y la respuesta completa casi coincidieron, concentrando la espera antes de la primera salida.
 
 ### Conclusión
 
-el agente ejecuta correctamente al dominio que pertenece. no evalua otro dominio.
+La skill y la memoria de trabajo cumplieron lo esperado: el turno 2 pidió la devolución sin volver a consultar las comisiones y el turno 3 respondió sin tools usando lo ya recibido. Cambiar de runtime es solo `AGENT_RUNTIME` en el `.env`; el resto del agente (skill, aprobación, API y tests) no cambia. El `.env` queda con `AGENT_RUNTIME=agent_framework`, confirmado en el proyecto actual, porque completó la conversación sin depender del reintento del cliente en esta corrida.
