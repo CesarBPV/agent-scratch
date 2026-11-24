@@ -10,7 +10,7 @@ name: deploy-agent
 
 on:
   push:
-    branches: [main, solution]
+    branches: [main, solution, s9_local]
     tags: ["t*-v*"]
   pull_request:
   workflow_dispatch:
@@ -84,7 +84,7 @@ jobs:
             --build-arg DOMAIN="$DOMAIN" --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE" .
           # Como en Azure: Terraform da AZURE_OPENAI_ENDPOINT (no FOUNDRY_ENDPOINT); la key es de relleno (/health no usa Foundry).
           docker run -d --name agent-check -p 8000:8000 \
-            -e AZURE_OPENAI_ENDPOINT=http://127.0.0.1:1 -e FOUNDRY_AUTH_PROVIDER=api_key -e FOUNDRY_API_KEY=ci "$IMAGE"
+            -e AZURE_OPENAI_ENDPOINT=http://127.0.0.1:1 -e FOUNDRY_AUTH_PROVIDER=api_key -e FOUNDRY_API_KEY=ci "$IMAGE" -e SEARCH_ENDPOINT=http://127.0.0.1:1 -e SEARCH_INDEX=ci
           ok=0
           for i in $(seq 1 15); do
             if curl -fsS http://127.0.0.1:8000/health; then ok=1; break; fi
