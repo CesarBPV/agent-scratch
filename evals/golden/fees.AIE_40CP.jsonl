@@ -1,0 +1,1 @@
+{"id": "fees-AIE40CP", "type": "personal_data", "history": [], "question": "¿Qué se concluyó en el caso de ejemplo del cobro de mantenimiento cuando la cuenta tenía saldo suficiente?", "expected_intent": "product_question", "expected_sources": ["undue-charges-cases.pdf"], "forbidden_sources": [], "key_facts": ["La devolución procedió"]}
