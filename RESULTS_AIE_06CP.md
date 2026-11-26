@@ -236,3 +236,38 @@ Equipo: `team-06`. Dominio: `fees`.
 ### Conclusión
 
 El agente del equipo corre en Azure con identidad administrada: el repo no guarda secretos, `az login` solo identifica a quien conversa, y el mismo flujo de la sesión 8 (acción pendiente, aprobación del asesor, resultado) funciona contra el MCP compartido desde la Container App. Las respuestas con `Fuentes:` prueban que lee `idx-team-06` en AI Search, y el historial y la acción pendiente viven en Cosmos DB, no en la memoria del proceso. El primer turno puede tardar por el arranque en frío, y cada merge a `main` despliega, así que el cambio de código y el despliegue son uno solo.
+
+## Sesión 10 — Trazas por turno y dashboard
+
+Equipo: `team-06`. App Insights: `appi-team-06`. Los cuatro casos contra el agente desplegado (paso 8).
+
+| Caso | `operation_Id` | Latencia (ms) | Tokens de entrada | Tokens de salida | Tools | Error | Observaciones |
+|---|---|---|---|---|---|---|---|
+| Saludo | `e58537e5104267fce5ced890606345dc` | 2 808 | 1 629 | 189 | — | — | Intención `greeting`, una sola llamada a `gpt-5-mini` (1 713 ms de los 2 808). Aunque es un saludo, el turno igual hace embeddings y busca en AI Search (~420 ms). La sesión era nueva, así que las lecturas a Cosmos DB salen 404 |
+| Consulta con retrieval | `c64b36143e1ab44517968a9c79a26701` | 5 074 | 1 634 | 575 | — | — | "¿Qué es el ITF y cuándo se cobra?" → `product_question` con 3 citas de `itf-tax.md`. Dentro del turno: `POST /embeddings` (226 ms) y `POST /indexes('idx-team-06')/docs/search` (94 ms). El modelo se lleva 3 802 ms (75 %) |
+| Llamada a tool | `91c6ed8fc43c7688cce51cfabf194345` | 9 361 | 3 266 | 1 145 | `get_charged_fees:ok` | — | CUS-1001 → FEE-4001 y FEE-4002. `tool get_charged_fees` tarda 98 ms y su `POST /mcp` 39 ms. Son dos llamadas al modelo (6 578 + 1 103 ms): casi todo el tiempo es del LLM, no del MCP |
+| Error controlado | `c58472aa35b5a08b8738a9e3eafa75a6` | 5 | — | — | — | `not_found` | `az rest` a `/chat/actions` con `call-inventada` → 404 "no hay una acción pendiente call-inventada en esta sesión". `chat.decision` sale `success=false` en 5 ms, con un único `GET` a Cosmos DB (404) y sin llamar al modelo. El `operation_Id` y `agent.error` permiten ubicar el turno en "Turnos con error" |
+
+En **Observaciones**, una línea: lo que llamó la atención de la traza (qué se llevó el tiempo, la dependencia que falló, si el
+error permite ubicar el turno). En **Tools**, `—` si el turno no llamó ninguna.
+
+Primer intento del caso de tool: `5df08973957c3d4566b4d3725a4ec563` (CUS-1001, 21:00:33 UTC), 16 237 ms, `get_charged_fees:error`. El `POST /mcp` tardó 10 022 ms y la tool terminó en error ("El servicio del banco no responde"). El turno no falló: el agente le avisó al cliente y le ofreció reintentar. Al repetirlo a las 21:01 respondió en 98 ms.
+
+### Lo que dice el workbook
+
+Workbook `Turnos del agente`, periodo de 4 h (incluye pruebas anteriores del mismo día, 15 turnos en total).
+
+| Panel | Lo que viste |
+|---|---|
+| Latencia p95 por intención | `data_query` p50 9 361 ms / p95 16 237 ms (6 turnos), `product_question` 5 074 / 5 182 ms (2), `greeting` 2 779 / 2 808 ms (4). Los turnos con tool cuestan entre 3 y 6 veces lo que un saludo, y el p95 de `data_query` lo marca el turno en el que el MCP no respondió |
+| Tokens por turno | De 1 772 a 3 253 tokens por turno según la franja de 15 min, con 1 a 1,6 llamadas al LLM por turno. Un turno con tool consume unos 3 200 de entrada frente a unos 1 600 de un saludo: es la segunda llamada al modelo con el resultado de la tool |
+| Dónde se va el tiempo de un turno | Foundry chat: 52 059 ms en 17 llamadas (p95 7 112 ms), muy por encima del resto. Luego MCP con 10 341 ms (casi todo el timeout de 10 s), embeddings 3 780 ms, Cosmos DB 2 604 ms en 95 llamadas (p95 135 ms) y AI Search 1 788 ms (p95 363 ms) |
+| Tools con error | `get_charged_fees` `error` 1 vez (p95 10 102 ms, el timeout del MCP) y `get_transactions` `error` 1 vez (88 ms, de una prueba anterior). `get_charged_fees` `ok` 3 veces con p95 de 98 ms. En "Turnos con error" solo aparecen los `chat.decision` `not_found` del error controlado |
+
+### ¿Qué optimizarías primero y por qué?
+
+La llamada al modelo de chat. Se lleva entre el 60 y el 75 % de cada turno, y en los turnos con tool se paga dos veces: la del plan y la de la respuesta con el resultado. Lo primero sería recortar lo que va en el prompt (el historial, los 5 fragmentos de `SEARCH_TOP_K` y las descripciones de las tools) y no hacer retrieval cuando la intención es `greeting`, porque hoy un saludo también paga embeddings y AI Search. En segundo lugar, bajar el timeout del MCP: cuando falla, el cliente espera 10 s para recibir un error. Cosmos DB y AI Search ya están por debajo de 150 ms en p95 y no son el cuello de botella.
+
+### Conclusión
+
+Con `APPLICATIONINSIGHTS_CONNECTION_STRING` y la identidad administrada, cada turno del agente desplegado queda en `appi-team-06` como un `chat.turn` (o `chat.decision`) con su intención, sus tokens y sus tools. Con el `operation_Id` se ve el árbol completo: modelo, embeddings, AI Search, Cosmos DB y `POST /mcp`, cada uno con su duración. Los cuatro casos se distinguen sin leer logs: el saludo no tiene tools, la consulta muestra la búsqueda, la tool muestra su `POST /mcp` y el error controlado sale en rojo con `agent.error = not_found`. La traza también dejó ver un problema que en la consola solo parecía lentitud: el MCP compartido tardó 10 s y falló una vez.
