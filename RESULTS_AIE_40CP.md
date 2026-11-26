@@ -172,3 +172,31 @@ No. En ambos runtimes `request_fee_refund` quedó primero como `pending_approval
 ### Conclusión
 
 La aprobación se controla en `_run` y `resolve`, por lo que funciona igual con `react` y `agent_framework`: la acción queda pendiente con su `action_id` y el asesor decide si se ejecuta. El error de negocio (`CUS-9999`) y el input inválido terminaron en respuestas al cliente, no en un 502; la trayectoria registra qué tool se usó y su resultado. No se pudo provocar una caída real del MCP compartido en esta corrida; los tests `test_a_query_that_fails_once_is_retried` y `test_a_query_that_keeps_failing_is_an_error_and_the_turn_goes_on` cubren el reintento y el error final. `uv run pytest`: 137 pruebas pasaron. El `.env` actual mantiene `AGENT_RUNTIME=agent_framework` para la sesión 9.
+
+## Sesión 9 — Despliegue en Azure
+
+Equipo: `team-06`. Dominio: `fees`.
+
+| Comprobación | Resultado |
+|---|---|
+| Tests en el contenedor (paso 3) | 139 passed, 5 skipped en 8.79 s |
+| Acción aprobada después de reiniciar `uvicorn` (paso 2, Cosmos DB) | Pedí la devolución de FEE-4002, detuve y levanté `uvicorn` antes de responder, aprobé con `s` y obtuve `resultado: {"id": "RFD-9001", "fee_id": "FEE-4002", "status": "registered", "reason": "cobro indebido"}` |
+| Imagen desplegada (`team-06/agent:<sha>`) | `team-06/agent:2436a79251d80aad82918fc4628e5a550653b079` |
+| Revisión activa y duración del job `deploy` | Revisión `ca-agent-chat-06--0000002`, estado `Running`. El workflow completo del merge a `main` terminó en success en 3 min 25 s (21:24:13–21:27:38 UTC); ese es el tiempo registrado para el workflow, no solo para el job `deploy`. |
+| `/health` del agente desplegado | `ok`, autenticado con el token del `az login`; el chat mostró el agente en `https://ca-agent-chat-06...` |
+| Respuesta con `Fuentes:` contra Azure (y su tiempo en ms) | Pregunta: "¿Cuál es el plazo para que respondan una solicitud de devolución de una comisión?" Respuesta: máximo 15 días hábiles; si procede, el abono toma 2 días hábiles. Fuente: `fee-refund-policy.docx · Política de devolución de comisiones > Plazos`. Primer texto: 5 438 ms; respuesta completa: 5 585 ms. |
+| Acción aprobada contra Azure, con su `resultado:` | `request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)` quedó `NO SE EJECUTA, pendiente de aprobación`; al aprobar con `s`: `resultado: {"id": "RFD-9001", "fee_id": "FEE-4002", "status": "registered", "reason": "cobro indebido"}` |
+
+### Qué pone Azure y qué pone la imagen
+
+- **Imagen (`ENV` del Dockerfile):** `DOMAIN`, `FOUNDRY_AUTH_PROVIDER`, `KNOWLEDGE_BASE`, `AGENT_RUNTIME`, `PATH`, `PYTHONUNBUFFERED`.
+- **Azure (variables de entorno de la Container App):** `APPLICATIONINSIGHTS_CONNECTION_STRING`, `AZURE_CLIENT_ID`, `AZURE_OPENAI_ENDPOINT`, `COSMOS_CONTAINER`, `COSMOS_DATABASE`, `COSMOS_ENDPOINT`, `FOUNDRY_PROJECT_ENDPOINT`, `KEY_VAULT_URI`, `MCP_SCOPE`, `MCP_URL`, `SEARCH_ENDPOINT`, `SEARCH_INDEX`, `TEAM_ID`. `AZURE_CLIENT_ID` corresponde a la identidad administrada. No se incluyen valores.
+
+### Problemas que encontraste y cómo los resolviste
+
+- El primer `/health` expiró porque la Container App estaba en frío; repetí la consulta y respondió `ok`.
+- El workflow de GitHub falló inicialmente por un error al copiar el archivo desde el template `upstream`; se revisó y corrigió el archivo y luego el despliegue terminó correctamente.
+
+### Conclusión
+
+El agente `team-06` quedó desplegado en Azure y la revisión activa llegó a `Running`. La identidad administrada permite acceder a Foundry, AI Search, MCP y Cosmos DB sin guardar claves en el repositorio. La respuesta con `Fuentes:` confirma el acceso al índice `idx-team-06`; la aprobación de `request_fee_refund` produjo un resultado únicamente después de la confirmación del asesor. El historial y las acciones pendientes persisten en Cosmos DB tras reiniciar `uvicorn`. La primera petición puede demorarse por el arranque en frío.
