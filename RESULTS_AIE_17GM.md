@@ -235,3 +235,33 @@ Se encontró un problema al momento de hacer el deployment. Se trataba de un err
 
 El servicio de ACA agiliza el despliegue de agentes. Permite su integración usando las mejores prácticas de CI y el despliegue se realiza rápidamente. 
 Por contraparte, si ha escalado a cero, toma cierto tiempo en que responda, por lo que no se recomienda en un ambiente que requiere alta disponibilidad. Las identidades administradas hacen que la aplicación sea más eficiente operativamente y segura al mismo tiempo.
+
+## Sesión 10 — Trazas por turno y dashboard
+
+Equipo: `team-06`. App Insights: `appi-team-06`. Los cuatro casos contra el agente desplegado (paso 8).
+
+| Caso | `operation_Id` | Latencia (ms) | Tokens de entrada | Tokens de salida | Tools | Error | Observaciones |
+|---|---|---|---|---|---|---|---|
+| Saludo | `217085ac8ef3d08faa08e185ef7ea337` | 2485 | 1605 | 192 | — | No | `greeting`, 1 llamada al LLM. El LLM se lleva ~1980 ms (80%); aun así corre embeddings + búsqueda (~330 ms) para un saludo que no lo necesita. |
+| Consulta con retrieval | `ac5bbefe2f06c16d79f003ea7cd005c4` | 5182 | 1646 | 672 | — | No | `product_question`, 3 citas. Embeddings 228 ms + AI Search 112 ms; el resto (~4760 ms, 92%) es la única llamada a gpt-5-mini. |
+| Llamada a tool | `d55f6730aa5bd9e0bf5df9849c2fc5ea` | 8624 | 3142 | 1034 | `get_charged_fees:ok` | No | 2 llamadas al LLM (8077 ms, 94%); la tool vía MCP tarda solo 88 ms. Los tokens de entrada se duplican por la segunda ronda con el resultado. |
+| Error controlado | `9c49202b7f8cf57e7da76c9e3cf080a8` | 6506 | 2902 | 606 | `get_transactions:error` | Sí (tool) | Cliente `CUS-9999` inexistente: el span `tool get_transactions` y `tools/call` quedan con `success=false`, pero el turno termina OK (HTTP 200) y el agente pide confirmar el código. Se ubica por `agent.tools`. |
+
+En **Observaciones**, una línea: lo que llamó la atención de la traza (qué se llevó el tiempo, la dependencia que falló, si el
+error permite ubicar el turno). En **Tools**, `—` si el turno no llamó ninguna.
+
+### Lo que dice el workbook
+
+| Panel | Lo que viste |
+|---|---|
+| Latencia p95 por intención | `data_query`: 2 turnos, p50 6506 ms / p95 8624 ms; `product_question`: 1 turno, 5182 ms; `greeting`: 2 turnos, p50 2485 ms / p95 2795 ms. Las consultas con tool son las más lentas porque hacen 2 llamadas al LLM. |
+| Tokens por turno | El panel `tokens_por_turno (Sum)` marca 4.72K. Los turnos con tool rondan 3.5–4.2K (entrada + salida) frente a ~1.8K de un saludo: la segunda ronda vuelve a mandar el prompt con el resultado de la tool. |
+| Dónde se va el tiempo de un turno | Foundry chat: 7 llamadas, 19605 ms (p95 5499 ms), ~89% del tiempo. Muy por detrás: embeddings 842 ms (p95 228), AI Search 660 ms (p95 158), Cosmos DB 611 ms en 39 llamadas (p95 92), MCP 131 ms (p95 41), otro 106 ms. |
+| Tools con error | Solo aparece `chat.decision` con `not_found` (operation `36c2906f52c47f3b76a76aeb09d8a577`, sesión `00000000-…`): una aprobación sobre una acción que no existía. El `get_transactions:error` del caso de error controlado no aparece, porque el turno terminó OK y el error solo está en el span de la tool. |
+
+### ¿Qué optimizarías primero y por qué?
+
+Las llamadas a Foundry/modelos es la parte que más demora en los turnos. Se puede optimizar el llamado a los modelos, cantidad de context window enviado (para reducir input/output tokens que también influye en tiempos), prompt engineering y prompt caching
+
+### Conclusión
+ La observabilidad de los agentes permite obtener logs distribuidos de los agentes desplegados. De esta forma se puede tener mejor visión y entendimiento de la operabilidad. Además, con agregaciones en las trazas se pueden armar dashboard que den mejor entendimiento e insights.
