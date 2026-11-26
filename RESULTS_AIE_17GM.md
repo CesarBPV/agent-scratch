@@ -204,3 +204,34 @@ No. En los dos runtimes, `request_fee_refund` quedó siempre en `pending_approva
 ### Conclusión
 
 La aprobación humana vive en `_run` y `resolve` (`chat_service.py`), por eso se comporta igual con `react` y con `agent_framework`: la tool sensible nunca se llama directamente, el asesor decide una vez por `action_id` y el agente le explica al cliente el resultado sin prometer de más. Un error de negocio (`CUS-9999`, o el "banco en frío" de las corridas con ruido) y un input mal formado (`1001` sin el prefijo `CUS-`) terminan en una respuesta al cliente, nunca en un 502 ni en un dato inventado — y la validación de argumentos contra el JSON Schema queda como red de seguridad para cuando el modelo igual se equivoque, aunque esta sesión el modelo ya filtró el input inválido antes de pedir la tool. La caída real del MCP compartido no se pudo provocar a propósito (es un recurso compartido), pero el reintento y el error final quedan cubiertos por `test_a_query_that_fails_once_is_retried` y `test_a_query_that_keeps_failing_is_an_error_and_the_turn_goes_on`; `uv run pytest` → 137 passed. El `.env` queda con `AGENT_RUNTIME=agent_framework` para la sesión 9.
+
+## Sesión 9 — Despliegue en Azure
+
+Equipo: `team-06`. Dominio: `fees`.
+
+| Comprobación | Resultado |
+|---|---|
+| Tests en el contenedor (paso 3) | 139 passed, 5 skipped |
+| Acción aprobada después de reiniciar `uvicorn` (paso 2, Cosmos DB) | INFO agent.infrastructure.bootstrap: Conversation store: Cosmos DB workshop/team-06 |
+| Imagen desplegada (`team-NN/agent:<sha>`) | team-06/agent:2436a79251d80aad82918fc4628e5a550653b079 |
+| Revisión activa y duración del job `deploy` | revision: ca-agent-chat-06--0000002, duración: 2m 35s|
+| `/health` del agente desplegado | Agente en https://ca-agent-chat-06.icybush-2ea2dfc1.eastus2.azurecontainerapps.io: ok |
+| Respuesta con `Fuentes:` contra Azure (y su tiempo en ms) | Agente [product_question]: El ITF (Impuesto a las Transacciones Financieras) es un impuesto, no una comisión del banco. La tasa es 0.005% del monto de cada operación afecta; por ejemplo, en una transferencia de S/ 2 000 el ITF sería S/0.10. Las operaciones menores a S/1 000 no están afectas. El banco lo retiene y lo paga a la administración tributaria.\nFuentes:\n[1] itf-tax.md · ITF: Impuesto a las Transacciones Financieras > Qué es\n[2] itf-tax.md · ITF: Impuesto a las Transacciones Financieras > Cuánto se cobra\n[3] itf-tax.md · ITF: Impuesto a las Transacciones Financieras > Operaciones que no pagan ITF\n(primer texto en 9495 ms, respuesta completa en 9704 ms, 2098 tokens de entrada, 802 de salida)|
+| Acción aprobada contra Azure, con su `resultado:` | Asesor: ¿apruebas request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)? [s/n]: s\nresultado: {"id": "RFD-9001", "fee_id": "FEE-4002", "status": "registered", "reason": "cobro indebido"}\nAgente [sensitive_action]: Su solicitud de reembolso de la comisión FEE-4002 (motivo: “cobro indebido”) fue registrada con ID RFD-9001. Queda para que el banco la procese; el reembolso no se ha aplicado todavía. |
+
+### Qué pone Azure y qué pone la imagen
+
+**Terraform (Azure, `az containerapp show ... properties.template.containers[0].env[].name`):** `APPLICATIONINSIGHTS_CONNECTION_STRING`, `AZURE_CLIENT_ID`, `AZURE_OPENAI_ENDPOINT`, `COSMOS_CONTAINER`, `COSMOS_DATABASE`, `COSMOS_ENDPOINT`, `FOUNDRY_PROJECT_ENDPOINT`, `KEY_VAULT_URI`, `MCP_SCOPE`, `MCP_URL`, `SEARCH_ENDPOINT`, `SEARCH_INDEX`, `TEAM_ID`.
+
+**Imagen (`devops/Dockerfile`, en el stage `runtime`, no aparecen en el `env[]` de la Container App):** `DOMAIN` (fijada por `--build-arg DOMAIN=<dominio del equipo>` en el CI), `FOUNDRY_AUTH_PROVIDER=entra_id`, `KNOWLEDGE_BASE=azure_search`, `AGENT_RUNTIME=agent_framework`.
+
+El CI deploy-agent.yaml no fija ninguna de las dos listas: solo actualiza la imagen. Terraform es quien inyecta la primera lista como variables de entorno de la Container App; la segunda viene en la imagen por el Dockerfile, así que `az containerapp show` nunca la muestra aunque el proceso sí las vea.
+
+### Problemas que encontraste y cómo los resolviste
+
+Se encontró un problema al momento de hacer el deployment. Se trataba de un error al momento de copiar el workflow deploy-agent.yaml. Se resolvió consultando y volviendo a revisar los archivos y código. Luego de esto se encontró el problema, se corrigió y se pudo desplegar correctamente. 
+
+### Conclusión
+
+El servicio de ACA agiliza el despliegue de agentes. Permite su integración usando las mejores prácticas de CI y el despliegue se realiza rápidamente. 
+Por contraparte, si ha escalado a cero, toma cierto tiempo en que responda, por lo que no se recomienda en un ambiente que requiere alta disponibilidad. Las identidades administradas hacen que la aplicación sea más eficiente operativamente y segura al mismo tiempo.

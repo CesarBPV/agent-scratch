@@ -1,0 +1,6 @@
+comprobacion,resultado_esperado,resultado_obtenido,evidencia
+health,Servicio saludable,Servicio saludable,Agente en https://ca-agent-chat-06.<>.io: ok
+imagen,Imagen publicada en ACR,Imagen publicada en ACR,team-06/agent:2436a79251d80aad82918fc4628e5a550653b079
+identidad,AI Search y MCP responden con la identidad administrada,AI Search y MCP responden con la identidad administrada,"Fuentes: itf-tax.md vía AI Search (respuesta sobre el ITF, 0.005% del monto); resultado: {""id"": ""RFD-9001"", ""fee_id"": ""FEE-4002"", ""status"": ""registered"", ""reason"": ""cobro indebido""} tras aprobar request_fee_refund vía MCP — ambas llamadas sin API key, autenticadas con AZURE_CLIENT_ID (identidad administrada)"
+secretos,Ninguna variable de la Container App guarda un secreto,Ninguna variable de la Container App guarda un secreto,APPLICATIONINSIGHTS_CONNECTION_STRING;AZURE_CLIENT_ID;AZURE_OPENAI_ENDPOINT;COSMOS_CONTAINER;COSMOS_DATABASE;COSMOS_ENDPOINT;FOUNDRY_PROJECT_ENDPOINT;KEY_VAULT_URI;MCP_SCOPE;MCP_URL;SEARCH_ENDPOINT;SEARCH_INDEX;TEAM_ID
+pruebas,Pruebas del pipeline aprobadas,Pruebas del pipeline aprobadas,Se obtuvo el resultado esperado en la ejecución de las pruebas del pipeline. Evidencia: 139 passed; 5 skipped in 4.19s
