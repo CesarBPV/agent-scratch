@@ -208,3 +208,31 @@ No. En los dos runtimes `request_fee_refund` salió siempre como `pending_approv
 ### Conclusión
 
 La aprobación vive en `_run` y `resolve`, por eso se comporta igual con `react` y con `agent_framework`: la acción queda pendiente con su `action_id`, el asesor decide una vez y el agente le cuenta al cliente lo que pasó. Un error de negocio (`CUS-9999`) y un input mal formado terminan en una respuesta al cliente, no en un 502, y la trayectoria deja en una línea qué tool se usó y cómo terminó cada una. Pendiente de esta corrida: la caída real del MCP no se pudo provocar (es compartido), así que el reintento y el error final lo respaldan los tests `test_a_query_that_fails_once_is_retried` y `test_a_query_that_keeps_failing_is_an_error_and_the_turn_goes_on`; `uv run pytest` → 137 passed. El `.env` queda con `AGENT_RUNTIME=agent_framework` para la sesión 9.
+
+
+## Sesión 9 — Despliegue en Azure
+
+Equipo: `team-06`. Dominio: `fees`.
+
+| Comprobación | Resultado |
+|---|---|
+| Tests en el contenedor (paso 3) | 139 passed, 5 skipped in 8.79s |
+| Acción aprobada después de reiniciar `uvicorn` (paso 2, Cosmos DB) | Pedí la devolución de FEE-4002, detuve y levanté uvicorn antes de responder, respondí `s` y salió `resultado: {"id": "RFD-9001", "fee_id": "FEE-4002", "status": "registered", "reason": "cobro indebido"}` |
+| Imagen desplegada (`team-NN/agent:<sha>`) | `team-06/agent:2436a79251d80aad82918fc4628e5a550653b079`  |
+| Revisión activa y duración del job `deploy` | Revisión `ca-agent-chat-06--0000002`, `Running`. El workflow completo del merge a `main` terminó en success en 3 min 25 s (21:24:13 → 21:27:38 UTC) |
+| `/health` del agente desplegado | `ok`, con token de mi `az login` (primera línea del chat: `Agente en https://ca-agent-chat-06...: ok`) |
+| Respuesta con `Fuentes:` contra Azure (y su tiempo en ms) | "¿Cuál es el plazo para que respondan una solicitud de devolución de una comisión?" → "máximo 15 días hábiles; si procede, abono en 2 días hábiles". Fuente: `fee-refund-policy.docx · Política de devolución de comisiones > Plazos`. Primer texto 5 438 ms, respuesta completa 5 585 ms |
+| Acción aprobada contra Azure, con su `resultado:` | `request_fee_refund(fee_id=FEE-4002, reason=cobro indebido)` quedó `NO SE EJECUTA, pendiente de aprobación`; al responder `s`: `resultado: {"id": "RFD-9001", "fee_id": "FEE-4002", "status": "registered", "reason": "cobro indebido"}` |
+
+### Qué pone Azure y qué pone la imagen
+
+- **La imagen (`ENV` del Dockerfile):** `DOMAIN`, `FOUNDRY_AUTH_PROVIDER` (`entra_id`), `KNOWLEDGE_BASE` (`azure_search`) y `AGENT_RUNTIME` (`agent_framework`), más `PATH` y `PYTHONUNBUFFERED`. Lo que no cambia entre entornos.
+- **Azure (variables de la Container App):** `APPLICATIONINSIGHTS_CONNECTION_STRING`, `AZURE_CLIENT_ID`, `AZURE_OPENAI_ENDPOINT`, `COSMOS_CONTAINER`, `COSMOS_DATABASE`, `COSMOS_ENDPOINT`, `FOUNDRY_PROJECT_ENDPOINT`, `KEY_VAULT_URI`, `MCP_SCOPE`, `MCP_URL`, `SEARCH_ENDPOINT`, `SEARCH_INDEX`, `TEAM_ID`. Son endpoints y nombres de recursos; ninguna guarda una api key ni una contraseña. `AZURE_CLIENT_ID` es el id de la identidad administrada, que es la que entra a Foundry, AI Search, el MCP y Cosmos DB.
+
+### Problemas que encontraste y cómo los resolviste
+
+- **Primer `/health` con timeout:** la primera vez el chat se cortó con `TimeoutError` en el health (30 s), porque la Container App estaba en frío. Repetí el comando y respondió `ok`; después las respuestas tardaron entre 5 y 22 s por turno. Durante el despliegue desde `main` tuvimos un problema con el workflow de GitHub porque nos equivocamos al copiarlo del template (`upstream`); lo resolvimos copiando correctamente el archivo.
+
+### Conclusión
+
+El agente del equipo corre en Azure con identidad administrada: el repo no guarda secretos, `az login` solo identifica a quien conversa, y el mismo flujo de la sesión 8 (acción pendiente, aprobación del asesor, resultado) funciona contra el MCP compartido desde la Container App. Las respuestas con `Fuentes:` prueban que lee `idx-team-06` en AI Search, y el historial y la acción pendiente viven en Cosmos DB, no en la memoria del proceso. El primer turno puede tardar por el arranque en frío, y cada merge a `main` despliega, así que el cambio de código y el despliegue son uno solo.
