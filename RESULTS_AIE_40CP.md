@@ -200,3 +200,34 @@ Equipo: `team-06`. Dominio: `fees`.
 ### Conclusión
 
 El agente `team-06` quedó desplegado en Azure y la revisión activa llegó a `Running`. La identidad administrada permite acceder a Foundry, AI Search, MCP y Cosmos DB sin guardar claves en el repositorio. La respuesta con `Fuentes:` confirma el acceso al índice `idx-team-06`; la aprobación de `request_fee_refund` produjo un resultado únicamente después de la confirmación del asesor. El historial y las acciones pendientes persisten en Cosmos DB tras reiniciar `uvicorn`. La primera petición puede demorarse por el arranque en frío.
+
+## Sesión 10 — Trazas por turno y dashboard
+
+Equipo: `team-06`. App Insights: `appi-team-06`. Los cuatro casos contra el agente desplegado (paso 8).
+
+| Caso | `operation_Id` | Latencia (ms) | Tokens de entrada | Tokens de salida | Tools | Error | Observaciones |
+|---|---|---|---|---|---|---|---|
+| Saludo | `217085ac8ef3d08faa08e185ef7ea337` | 2485 | 1605 | 192 | — | No | `greeting`, 1 llamada al LLM. El LLM tomó ~1980 ms (80%); aun así hubo embeddings y búsqueda (~330 ms) para un saludo. |
+| Consulta con retrieval | `ac5bbefe2f06c16d79f003ea7cd005c4` | 5182 | 1646 | 672 | — | No | `product_question`, 3 citas. Embeddings: 228 ms; AI Search: 112 ms; la llamada a gpt-5-mini tomó ~4760 ms (92%). |
+| Llamada a tool | `d55f6730aa5bd9e0bf5df9849c2fc5ea` | 8624 | 3142 | 1034 | `get_charged_fees:ok` | No | 2 llamadas al LLM tomaron 8077 ms (94%); MCP tardó 88 ms. La segunda ronda volvió a enviar el prompt con el resultado de la tool. |
+| Error controlado | `9c49202b7f8cf57e7da76c9e3cf080a8` | 6506 | 2902 | 606 | `get_transactions:error` | Sí (tool) | `CUS-9999` no existe. El span `tool get_transactions` / `tools/call` marca `success=false`, pero el turno terminó HTTP 200 y pidió confirmar el código; se identifica por `agent.tools`. |
+
+En **Observaciones**, una línea: lo que llamó la atención de la traza (qué se llevó el tiempo, la dependencia que falló, si el
+error permite ubicar el turno). En **Tools**, `—` si el turno no llamó ninguna.
+
+### Lo que dice el workbook
+
+| Panel | Lo que viste |
+|---|---|
+| Latencia p95 por intención | `data_query`: 2 turnos, p50 6506 ms / p95 8624 ms; `product_question`: 1 turno, 5182 ms; `greeting`: 2 turnos, p50 2485 ms / p95 2795 ms. Las consultas con tool son las más lentas porque hacen 2 llamadas al LLM. |
+| Tokens por turno | El panel `tokens_por_turno (Sum)` marca 4.72K. Turnos con tool: ~3.5–4.2K tokens (entrada + salida), frente a ~1.8K en un saludo; la segunda ronda vuelve a enviar el prompt y el resultado de la tool. |
+| Dónde se va el tiempo de un turno | Foundry chat: 7 llamadas, 19 605 ms (p95 5499 ms), ~89% del tiempo. Embeddings: 842 ms (p95 228); AI Search: 660 ms (p95 158); Cosmos DB: 611 ms en 39 llamadas (p95 92); MCP: 131 ms (p95 41); otros: 106 ms. |
+| Tools con error | Solo aparece `chat.decision` con `not_found` (operation `36c2906f52c47f3b76a76aeb09d8a577`, sesión `00000000-…`): aprobación sobre una acción inexistente. El `get_transactions:error` del caso controlado no aparece aquí porque el turno terminó OK; el error se ve en el span de la tool. |
+
+### ¿Qué optimizarías primero y por qué?
+
+Optimizaría primero las llamadas a Foundry: concentran alrededor del 89% del tiempo. Revisaría si el saludo puede evitar embeddings y búsqueda, y reduciría el contexto y los tokens enviados en las rondas con tools mediante ajustes de prompts y caching, midiendo que no empeore la calidad.
+
+### Conclusión
+
+Las trazas permiten seguir cada turno y sus dependencias mediante `operation_Id`, latencia, tokens y spans de tools. En estos casos, Foundry domina el tiempo; las llamadas a tools son rápidas en comparación. La traza de error controlado muestra que un error de tool puede quedar registrado en su span aunque el turno termine correctamente, por lo que conviene consultar tanto las trazas de turno como las de dependencia al diagnosticar.
